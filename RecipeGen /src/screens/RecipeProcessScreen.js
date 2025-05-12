@@ -2,8 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, SafeAreaView, TouchableOpacity, Alert, ScrollView, ActivityIndicator } from 'react-native';
 import Icon from 'react-native-vector-icons/Ionicons';
 import { useNavigation, useRoute, useFocusEffect } from '@react-navigation/native';
-import { createRecipe, generateRecipeProcess, deleteRecipe } from '../services/api';
+import { createRecipe, generateRecipeProcess, deleteRecipe, syncRecipesFromBackend } from '../services/api';
 import { database, clearJWT, setAppState } from '../database';
+import { Q } from '@nozbe/watermelondb';
 
 const isValidRemoteId = (remoteId) => {
   if (!remoteId) return false;
@@ -24,6 +25,20 @@ const RecipeProcessScreen = () => {
   const navigation = useNavigation();
   const route = useRoute();
   const { recipeName, recipe, description: routeDescription } = route.params || {};
+  
+  // Add debug logging for recipe params
+  useEffect(() => {
+    console.log('RecipeProcess params:', { 
+      recipeName, 
+      recipeId: recipe?.id,
+      recipeTitle: recipe?.title,
+      hasRecipe: !!recipe
+    });
+  }, [recipeName, recipe]);
+
+  // Use recipe.title as fallback for recipeName
+  const displayName = recipeName || recipe?.title || 'Recipe';
+  
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -47,8 +62,12 @@ const RecipeProcessScreen = () => {
       console.log('Loaded recipe from DB:', recipe);
       setRecipeProcess({
         description: recipe.description,
-        ingredients: recipe.ingredients ? recipe.ingredients.split(',') : [],
-        steps: recipe.steps ? recipe.steps.split('\n') : [],
+        ingredients: (typeof recipe.ingredients === 'string' && recipe.ingredients.trim() && recipe.ingredients !== 'null' && recipe.ingredients !== 'undefined')
+          ? recipe.ingredients.split(',').map(i => i.trim()).filter(Boolean)
+          : [],
+        steps: (typeof recipe.steps === 'string' && recipe.steps.trim() && recipe.steps !== 'null' && recipe.steps !== 'undefined')
+          ? recipe.steps.split('\n').map(s => s.trim()).filter(Boolean)
+          : [],
         cookingTime: recipe.cookingTime || recipe.cooking_time || '',
       });
       setLoading(false);
@@ -85,7 +104,7 @@ const RecipeProcessScreen = () => {
       description = recipeProcess.process;
     }
     const cooking_time = recipeProcess?.cookingTime || '';
-    if (!recipeName || !description) {
+    if (!displayName || !description) {
       Alert.alert('Error', 'Recipe name or description is missing.');
       setSaving(false);
       return;
@@ -95,7 +114,7 @@ const RecipeProcessScreen = () => {
     try {
       // Only save to backend, then sync
       const backendRecipe = await createRecipe({
-        title: recipeName,
+        title: displayName,
         description,
         ingredients: recipeProcess.ingredients.join(', '),
         steps: recipeProcess.steps.join('\n'),
@@ -104,7 +123,7 @@ const RecipeProcessScreen = () => {
 
       setSaved(true);
       await setAppState('shouldRefreshRecipes', 'true');
-      Alert.alert('Recipe Saved', `${recipeName} has been added to your saved recipes!`);
+      Alert.alert('Recipe Saved', `${displayName} has been added to your saved recipes!`);
     } catch (err) {
       console.error('Failed to save recipe:', err);
       Alert.alert('Error', 'Failed to save recipe.');
@@ -116,48 +135,87 @@ const RecipeProcessScreen = () => {
     setDeleting(true);
     let backendDeleteError = false;
     try {
+      console.log('Starting deletion process for recipe:', {
+        id: recipe.id,
+        remote_id: recipe.remote_id,
+        title: recipe.title
+      });
+      
       // Delete from backend if remoteId is valid
-      if (isValidRemoteId(recipe.remoteId)) {
+      if (isValidRemoteId(recipe.remote_id)) {
         try {
-          await deleteRecipe(recipe.remoteId);
-          console.log('Successfully deleted from backend:', recipe.remoteId);
+          console.log('Attempting to delete recipe from backend with remote_id:', recipe.remote_id);
+          await deleteRecipe(recipe.remote_id);
+          console.log('Successfully deleted from backend:', recipe.remote_id);
         } catch (error) {
           backendDeleteError = true;
           console.error('Error deleting from backend:', error);
           // Continue with local deletion even if backend delete fails
         }
       } else {
-        console.log('Skipping backend delete, invalid remoteId:', recipe.remoteId);
+        console.log('Skipping backend delete, invalid remoteId:', recipe.remote_id);
       }
+      
       // Always delete from WatermelonDB
-      await database.write(async () => {
-        const dbRecipe = await database.get('recipes').find(recipe.id);
-        if (dbRecipe) {
-          await dbRecipe.markAsDeleted();
-          console.log('Successfully deleted from local DB:', recipe.id);
-        } else {
-          console.log('Recipe not found in local DB:', recipe.id);
-        }
-      });
+      try {
+        console.log('Attempting to delete recipe from local database with id:', recipe.id);
+        await database.write(async () => {
+          try {
+            const dbRecipe = await database.get('recipes').find(recipe.id);
+            if (dbRecipe) {
+              await dbRecipe.markAsDeleted();
+              console.log('Successfully deleted from local DB:', recipe.id);
+            } else {
+              console.log('Recipe not found by ID in local DB, trying to find by title:', recipe.title);
+              // Try to find by title as fallback
+              const recipesByTitle = await database.get('recipes')
+                .query(Q.where('title', recipe.title))
+                .fetch();
+              
+              if (recipesByTitle.length > 0) {
+                for (const r of recipesByTitle) {
+                  await r.markAsDeleted();
+                  console.log('Deleted recipe by title match:', r.id, r.title);
+                }
+              } else {
+                console.log('No recipes found with title:', recipe.title);
+              }
+            }
+          } catch (findError) {
+            console.error('Error finding recipe in database:', findError);
+            throw findError;
+          }
+        });
+      } catch (dbError) {
+        console.error('Error deleting from local database:', dbError);
+        throw dbError; // Re-throw to be caught by the outer try/catch
+      }
+      
       await setAppState('shouldRefreshRecipes', 'true');
+      
       // Sync from backend to ensure local DB matches
       try {
-        if (typeof syncRecipesFromBackend === 'function') {
-          await syncRecipesFromBackend();
-          console.log('Successfully synced after delete');
-        }
-      } catch (error) {
-        console.error('Error syncing after delete:', error);
+        console.log('Attempting to sync recipes after deletion');
+        await syncRecipesFromBackend();
+        console.log('Successfully synced after delete');
+      } catch (syncError) {
+        console.error('Error syncing after delete:', syncError);
         // Continue even if sync fails
       }
+      
       if (backendDeleteError) {
         Alert.alert('Warning', 'Recipe deleted locally, but failed to delete from server.');
+      } else {
+        console.log('Recipe deletion process completed successfully');
       }
+      
       navigation.goBack();
     } catch (err) {
-      Alert.alert('Error', 'Failed to delete recipe.');
+      console.error('Fatal error in delete process:', err);
+      Alert.alert('Error', 'Failed to delete recipe. Please try again.');
+    } finally {
+      setDeleting(false);
     }
-    setDeleting(false);
   };
 
   const handleLogout = async () => {
@@ -185,7 +243,7 @@ const RecipeProcessScreen = () => {
             <TouchableOpacity style={styles.backBtn} onPress={() => navigation.goBack()}>
               <Icon name="arrow-back" size={26} color="#007AFF" />
             </TouchableOpacity>
-            <Text style={styles.title}>{recipeName}</Text>
+            <Text style={styles.title}>{displayName}</Text>
           </View>
           <View style={styles.center}>
             <ActivityIndicator size="large" color="#007AFF" />
@@ -204,7 +262,7 @@ const RecipeProcessScreen = () => {
             <TouchableOpacity style={styles.backBtn} onPress={() => navigation.goBack()}>
               <Icon name="arrow-back" size={26} color="#007AFF" />
             </TouchableOpacity>
-            <Text style={styles.title}>{recipeName}</Text>
+            <Text style={styles.title}>{displayName}</Text>
           </View>
           <View style={styles.center}>
             <Text style={styles.errorText}>{error}</Text>
@@ -214,6 +272,19 @@ const RecipeProcessScreen = () => {
     );
   }
 
+  // Defensive: always use arrays for ingredients and steps
+  const safeIngredients = Array.isArray(recipeProcess?.ingredients)
+    ? recipeProcess.ingredients
+    : typeof recipeProcess?.ingredients === 'string'
+      ? recipeProcess.ingredients.split(',').map(i => i.trim()).filter(Boolean)
+      : [];
+
+  const safeSteps = Array.isArray(recipeProcess?.steps)
+    ? recipeProcess.steps
+    : typeof recipeProcess?.steps === 'string'
+      ? recipeProcess.steps.split('\n').map(s => s.trim()).filter(Boolean)
+      : [];
+
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView contentContainerStyle={styles.scrollContent}>
@@ -221,7 +292,7 @@ const RecipeProcessScreen = () => {
           <TouchableOpacity style={styles.backBtn} onPress={() => navigation.goBack()}>
             <Icon name="arrow-back" size={26} color="#007AFF" />
           </TouchableOpacity>
-          <Text style={styles.title}>{recipeName}</Text>
+          <Text style={styles.title}>{displayName}</Text>
         </View>
         
         {recipeProcess?.cookingTime && (
@@ -233,14 +304,14 @@ const RecipeProcessScreen = () => {
 
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Ingredients</Text>
-          {recipeProcess?.ingredients.map((ingredient, idx) => (
+          {safeIngredients.map((ingredient, idx) => (
             <Text style={styles.text} key={idx}>• {ingredient}</Text>
           ))}
         </View>
 
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Steps</Text>
-          {recipeProcess?.steps.map((step, idx) => (
+          {safeSteps.map((step, idx) => (
             <Text style={styles.text} key={idx}>{idx + 1}. {step}</Text>
           ))}
         </View>

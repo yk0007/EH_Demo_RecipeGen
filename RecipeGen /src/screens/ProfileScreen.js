@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, SafeAreaView, TouchableOpacity, TextInput, Aler
 import Icon from 'react-native-vector-icons/Ionicons';
 import { useNavigation } from '@react-navigation/native';
 import { updateProfile } from '../services/api';
-import { getUser, database } from '../database';
+import { getUser, database, clearJWT, clearUser } from '../database';
 
 const ProfileScreen = () => {
   const navigation = useNavigation();
@@ -47,10 +47,18 @@ const ProfileScreen = () => {
     }
   };
 
-  const handleLogout = () => {
-    // TODO: Implement real logout logic
-    Alert.alert('Logged Out', 'You have been logged out.');
-    navigation.replace('Login');
+  const handleLogout = async () => {
+    try {
+      await clearJWT();
+      await clearUser();
+      navigation.reset({
+        index: 0,
+        routes: [{ name: 'Login' }],
+      });
+    } catch (error) {
+      console.error('Logout error:', error);
+      Alert.alert('Error', 'Failed to logout properly. Please try again.');
+    }
   };
 
   return (

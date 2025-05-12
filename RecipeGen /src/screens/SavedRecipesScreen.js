@@ -40,6 +40,7 @@ const SavedRecipesScreen = () => {
     setLoading(true);
     try {
       const recipes = await database.get('recipes').query().fetch();
+      console.log('Fetched recipes from DB (raw):', recipes);
       setSavedRecipes(recipes);
     } catch (err) {
       console.error('Error fetching recipes:', err);
@@ -162,27 +163,50 @@ const SavedRecipesScreen = () => {
         </View>
       ) : (
         <FlatList
-          data={savedRecipes.filter(r => r && r.title)}
+          data={deduplicateRecipes(savedRecipes.filter(r => r && r.title))}
           keyExtractor={item => (item.id ? item.id.toString() : Math.random().toString())}
           contentContainerStyle={styles.list}
           renderItem={({ item }) => {
-            // Map cooking_time to cookingTime if needed
-            const cookingTime = item.cookingTime || item.cooking_time || '';
-            console.log('Recipe item:', item);
+            console.log('Rendering recipe:', item.title, 'cooking_time:', item.cooking_time, 'id:', item.id, 'remote_id:', item.remote_id);
             return (
               <View style={styles.recipeCard}>
-                <TouchableOpacity style={styles.deleteBtn} onPress={() => handleDelete(item.id, item.remoteId)} disabled={deleting}>
-                  <Icon name="trash" size={20} color="#ff3b30" />
+                <TouchableOpacity
+                  style={styles.deleteBtn}
+                  onPress={() => handleDelete(item.id, item.remote_id)}
+                  disabled={deleting}
+                >
+                  <Icon name="trash" size={22} color="#ff3b30" />
                 </TouchableOpacity>
-                <TouchableOpacity style={{ flex: 1 }} onPress={() => navigation.navigate('RecipeProcess', { recipeName: item.title, recipe: item })}>
-                  <View style={styles.cardContent}>
-                    <Text style={styles.recipeName} numberOfLines={2}>{item.title}</Text>
-                    <Text style={styles.recipeDescription} numberOfLines={3}>{item.description}</Text>
-                    {(item.cookingTime || item.cooking_time) && (
-                      <Text style={styles.recipeCookingTime}>
-                        Cooking Time: {item.cookingTime || item.cooking_time}
+                <TouchableOpacity
+                  style={{flex: 1}}
+                  onPress={() => {
+                    // Extract only serializable properties to prevent navigation warning
+                    const serializedRecipe = {
+                      id: item.id,
+                      title: item.title,
+                      description: item.description,
+                      ingredients: item.ingredients,
+                      steps: item.steps,
+                      cooking_time: item.cooking_time,
+                      remote_id: item.remote_id
+                    };
+                    
+                    navigation.navigate('RecipeProcess', { 
+                      recipe: serializedRecipe, 
+                      recipeName: item.title || 'Recipe' 
+                    });
+                  }}
+                >
+                  <View style={styles.recipeInfo}>
+                    <Text style={styles.recipeTitle}>{item.title}</Text>
+                    <Text style={styles.recipeDescription} numberOfLines={2}>
+                      {item.description}
+                    </Text>
+                    <View style={styles.recipeMeta}>
+                      <Text style={styles.recipeTime}>
+                        {item.cooking_time || 'Time not specified'}
                       </Text>
-                    )}
+                    </View>
                   </View>
                 </TouchableOpacity>
               </View>
@@ -193,6 +217,39 @@ const SavedRecipesScreen = () => {
     </SafeAreaView>
   );
 };
+
+// Helper to deduplicate recipes by remote_id or id
+function deduplicateRecipes(recipes) {
+  // First, group recipes by title
+  const recipesByTitle = {};
+  recipes.forEach(recipe => {
+    if (!recipe.title) return;
+    if (!recipesByTitle[recipe.title]) {
+      recipesByTitle[recipe.title] = [];
+    }
+    recipesByTitle[recipe.title].push(recipe);
+  });
+
+  // For each title group, prioritize the recipe with a remote_id
+  const dedupedRecipes = Object.values(recipesByTitle).map(group => {
+    // Sort by whether they have a remote_id (remote_id first)
+    group.sort((a, b) => {
+      if (a.remote_id && !b.remote_id) return -1;
+      if (!a.remote_id && b.remote_id) return 1;
+      return 0;
+    });
+    // Return the first item (prioritizing remote_id)
+    return group[0];
+  });
+
+  console.log('Deduplicated recipes:', dedupedRecipes.map(r => ({
+    id: r.id, 
+    remote_id: r.remote_id, 
+    title: r.title
+  })));
+  
+  return dedupedRecipes;
+}
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#fff' },
@@ -231,10 +288,10 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     minHeight: 160,
   },
-  cardContent: {
+  recipeInfo: {
     padding: 20,
   },
-  recipeName: {
+  recipeTitle: {
     fontSize: 20,
     color: '#222',
     fontWeight: 'bold',
@@ -245,6 +302,16 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: '#666',
     lineHeight: 22,
+  },
+  recipeMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 6,
+  },
+  recipeTime: {
+    fontSize: 14,
+    color: '#007AFF',
+    fontWeight: '600',
   },
   deleteBtn: {
     position: 'absolute',

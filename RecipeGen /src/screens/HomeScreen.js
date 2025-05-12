@@ -130,7 +130,7 @@ const HomeScreen = () => {
               <View style={styles.currentIngredientsSection}>
                 <Text style={styles.currentIngredientsTitle}>Current Ingredients</Text>
                 <View style={styles.ingredientChipsRow}>
-                  {ingredients.map((item) => renderIngredient(item))}
+                  {(ingredients || []).map((item) => renderIngredient(item))}
                 </View>
               </View>
             )}

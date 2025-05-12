@@ -546,5 +546,9 @@ func main() {
 	protected.POST("/generate-recipe-process", generateRecipeProcess)
 	protected.POST("/recipes/sync/pull", syncPullRecipes)
 	protected.POST("/recipes/sync/push", syncPushRecipes)
-	e.Logger.Fatal(e.Start(":8080"))
+	port := os.Getenv("PORT")
+	if port == "" {
+  	  port = "8080"
+	}
+	e.Logger.Fatal(e.Start(":" + port))
 }

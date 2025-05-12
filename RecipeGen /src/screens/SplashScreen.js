@@ -1,17 +1,28 @@
 import React, { useEffect } from 'react';
 import { View, Image, StyleSheet, Text } from 'react-native';
-import { getJWT } from '../database';
+import { getJWT, database } from '../database';
 
 const SplashScreen = ({ navigation }) => {
   useEffect(() => {
-    const timer = setTimeout(async () => {
+    const checkAuth = async () => {
+      try {
+        // Wait for database to be ready
+        await database.write(async () => {
       const token = await getJWT();
+          console.log('SplashScreen - Token check:', token ? 'Token exists' : 'No token');
       if (token) {
         navigation.replace('Home');
       } else {
         navigation.replace('Login');
       }
-    }, 2000); // Show splash for 2 seconds
+        });
+      } catch (error) {
+        console.error('SplashScreen - Auth check error:', error);
+        navigation.replace('Login');
+      }
+    };
+
+    const timer = setTimeout(checkAuth, 2000); // Show splash for 2 seconds
     return () => clearTimeout(timer);
   }, [navigation]);
 

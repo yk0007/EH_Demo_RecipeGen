@@ -2,7 +2,7 @@ import axios from 'axios';
 import { saveJWT, getJWT, clearJWT, saveUser, clearUser, database } from '../database';
 import { Q } from '@nozbe/watermelondb';
 
-const API_URL = 'http://10.0.2.2:8080/api'; // Use /api for all endpoints
+const API_URL = 'Your_Api_url/api'; // Use /api for all endpoints
 
 const api = axios.create({
   baseURL: API_URL,
@@ -51,6 +51,9 @@ export const getRecipes = async () => {
   try {
     const response = await api.get('/recipes');
     console.log('API /recipes response:', response.data);
+    // Debug: log recipes from WatermelonDB
+    const localRecipes = await database.get('recipes').query().fetch();
+    console.log('Fetched recipes from DB:', localRecipes);
     return response.data;
   } catch (err) {
     console.log('API /recipes error:', err);
@@ -60,18 +63,26 @@ export const getRecipes = async () => {
 
 // Helper to save a recipe to WatermelonDB
 export const saveRecipeToDB = async (r) => {
+  console.log('Saving recipe to DB:', r); // Debug log
   const remoteId = r.id ? String(r.id) : (r.ID ? String(r.ID) : null);
   if (!remoteId) return;
   const existing = await database.get('recipes').query(Q.where('remote_id', remoteId)).fetch();
-  if (existing.length > 0) return; // Already exists, skip
+  if (existing.length > 0) {
+    console.log('Recipe with remote_id', remoteId, 'already exists, skipping');
+    return; // Already exists, skip
+  }
+  // Ensure ingredients and steps are always strings
+  const safeIngredients = (typeof r.ingredients === 'string') ? r.ingredients : Array.isArray(r.ingredients) ? r.ingredients.join(', ') : '';
+  const safeSteps = (typeof r.steps === 'string') ? r.steps : Array.isArray(r.steps) ? r.steps.join('\n') : '';
   await database.get('recipes').create(recipe => {
     recipe.title = r.title;
     recipe.description = r.description;
-    recipe.ingredients = r.ingredients;
-    recipe.steps = r.steps;
-    recipe.cooking_time = r.cooking_time || '';
-    recipe.remoteId = remoteId;
+    recipe.ingredients = safeIngredients;
+    recipe.steps = safeSteps;
+    recipe.cooking_time = r.cooking_time || r.cookingTime || '';
+    recipe.remote_id = remoteId;
   });
+  console.log('Recipe saved to DB with remote_id:', remoteId);
 };
 
 export const createRecipe = async (recipeData) => {
@@ -131,19 +142,54 @@ export const generateRecipeProcess = async (recipeName) => {
 // Sync recipes from backend to WatermelonDB
 export const syncRecipesFromBackend = async () => {
   const recipes = await getRecipes(); // Fetch from backend
+  console.log('syncRecipesFromBackend: recipes from backend:', recipes);
   await database.write(async () => {
-    // Clear local recipes
-    const allRecipes = await database.get('recipes').query().fetch();
-    for (const r of allRecipes) await r.markAsDeleted();
+    // First, get all existing recipes
+    const existingRecipes = await database.get('recipes').query().fetch();
+    console.log('Existing recipes before sync:', existingRecipes.map(r => ({
+      id: r.id, 
+      remote_id: r.remote_id, 
+      title: r.title
+    })));
+    
+    // Create a map of remote IDs we're about to sync
+    const remoteIds = new Set((recipes || []).map(r => String(r.id || r.ID || '')));
+    
+    // Delete ALL existing recipes that have remote_ids (they'll be re-added with fresh data)
+    for (const r of existingRecipes) {
+      if (r.remote_id && remoteIds.has(String(r.remote_id))) {
+        console.log('Deleting existing recipe with remote_id:', r.remote_id, 'title:', r.title);
+        await r.markAsDeleted();
+      }
+    }
+    
+    // Delete any local recipes with the same title as remote recipes to avoid duplicates
+    const remoteTitles = new Set((recipes || []).map(r => r.title));
+    const localRecipes = await database.get('recipes').query(Q.where('remote_id', null)).fetch();
+    
+    for (const r of localRecipes) {
+      if (remoteTitles.has(r.title)) {
+        console.log('Deleting local duplicate of remote recipe:', r.title);
+        await r.markAsDeleted();
+      }
+    }
+    
     // Add backend recipes
-    for (const r of recipes) {
+    for (const r of recipes || []) {
       await saveRecipeToDB(r);
     }
+    
+    const afterSync = await database.get('recipes').query().fetch();
+    console.log('syncRecipesFromBackend: recipes in local DB after sync:', afterSync.map(r => ({
+      id: r.id, 
+      remote_id: r.remote_id, 
+      title: r.title
+    })));
   });
 };
 
 export const deleteRecipeFromBackend = async (remoteId, jwt) => {
-  await fetch(`http://10.0.2.2:8080/api/recipes/${remoteId}`, {
+  await fetch(`Your_Api_url/api/recipes/${remoteId}`, {
     method: 'DELETE',
     headers: {
       'Authorization': `Bearer ${jwt}`,
@@ -151,3 +197,11 @@ export const deleteRecipeFromBackend = async (remoteId, jwt) => {
     }
   });
 }; 
+
+api.interceptors.response.use(
+  response => response,
+  error => {
+    console.log('AXIOS ERROR:', error.toJSON ? error.toJSON() : error);
+    return Promise.reject(error);
+  }
+); 

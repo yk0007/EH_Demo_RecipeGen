@@ -84,6 +84,14 @@ android {
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1
         versionName "1.0"
+        
+        // Add C++ configuration
+        externalNativeBuild {
+            cmake {
+                cppFlags "-std=c++20"
+                arguments "-DANDROID_STL=c++_shared"
+            }
+        }
     }
     signingConfigs {
         debug {
@@ -122,6 +130,15 @@ dependencies {
     } else {
         implementation jscFlavor
     }
+
+    // Add these lines to fix dependency resolution
+    // implementation project(':nozbe_watermelondb')
+    // implementation project(':react-native-community_netinfo')
+    // implementation project(':react-native-linear-gradient')
+    // implementation project(':react-native-safe-area-context')
+    // implementation project(':react-native-screens')
+    // implementation project(':react-native-splash-screen')
+    // implementation project(':react-native-vector-icons')
 }
 
 apply from: "../../node_modules/react-native-vector-icons/fonts.gradle"
